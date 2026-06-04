@@ -39,6 +39,7 @@ from slothy.targets.aarch64.aarch64_neon import (
     Ldr_X,
     Str_X,
     Ldr_Q,
+    Str_D,
     Str_Q,
     vuzp1,
     vuzp2,
@@ -247,7 +248,7 @@ execution_units = {
         )
     ],
     (Ldr_Q): ExecutionUnit.LOAD(),
-    (Str_Q): ExecutionUnit.STORE(),
+    (Str_D, Str_Q): ExecutionUnit.STORE(),
     (q_ldr1_stack, Q_Ld2_Lane_Post_Inc): list(
         map(list, product(ExecutionUnit.V(), ExecutionUnit.LOAD()))
     ),  # ?
@@ -332,7 +333,7 @@ inverse_throughput = {
     (mov_d01, mov_b00): 1,  # guessed
     fcsel: 1,
     # Neon Load/Store
-    (Ldr_Q, Str_Q): 1,
+    (Ldr_Q, Str_D, Str_Q): 1,
     (q_ldr1_stack, Q_Ld2_Lane_Post_Inc): 3,  # guessed
     St4: 5,  # guessed
     Ld4: 5,  # guessed
@@ -401,7 +402,7 @@ default_latencies = {
     fcsel: 2,
     # Neon Load/Store
     (Ldr_Q): 4,  # probably something less than 10
-    (Str_Q): 4,  # guessed
+    (Str_D, Str_Q): 4,  # guessed
     St4: 4,  # guessed
     Ld4: 6,  # guessed
     St3: 3,  # guessed

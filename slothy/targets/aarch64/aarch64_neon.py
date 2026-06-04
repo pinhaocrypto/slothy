@@ -762,7 +762,16 @@ class Instruction:
     def is_vector_store(self):
         """Indicates if an instruction is a Neon store instruction"""
         return self._is_instance_of(
-            [Str_Q, Stp_Q, St2, St3, St4, d_stp_stack_with_inc, d_str_stack_with_inc]
+            [
+                Str_D,
+                Str_Q,
+                Stp_Q,
+                St2,
+                St3,
+                St4,
+                d_stp_stack_with_inc,
+                d_str_stack_with_inc,
+            ]
         )
 
     # scalar
@@ -1798,6 +1807,10 @@ class Str_Q(AArch64Instruction):
     pass
 
 
+class Str_D(AArch64Instruction):
+    pass
+
+
 class Stp_Q(AArch64Instruction):
     pass
 
@@ -1836,6 +1849,36 @@ class q_str_with_imm_hint(Str_Q):
 class q_str_with_inc(Str_Q):
     pattern = "str <Qa>, [<Xc>, <imm>]"
     inputs = ["Qa", "Xc"]
+
+    @classmethod
+    def make(cls, src):
+        obj = AArch64Instruction.build(cls, src)
+        obj.increment = None
+        obj.pre_index = obj.immediate
+        obj.addr = obj.args_in[1]
+        return obj
+
+    def write(self):
+        self.immediate = simplify(self.pre_index)
+        return super().write()
+
+
+class d_str(Str_D):
+    pattern = "str <Da>, [<Xc>]"
+    inputs = ["Da", "Xc"]
+
+    @classmethod
+    def make(cls, src):
+        obj = AArch64Instruction.build(cls, src)
+        obj.increment = None
+        obj.pre_index = None
+        obj.addr = obj.args_in[1]
+        return obj
+
+
+class d_str_with_inc(Str_D):
+    pattern = "str <Da>, [<Xc>, <imm>]"
+    inputs = ["Da", "Xc"]
 
     @classmethod
     def make(cls, src):
@@ -1949,10 +1992,38 @@ class q_str_with_inc_writeback(Str_Q):
         return obj
 
 
+class d_str_with_inc_writeback(Str_D):
+    pattern = "str <Da>, [<Xc>, <imm>]!"
+    in_outs = ["Xc"]
+    inputs = ["Da"]
+
+    @classmethod
+    def make(cls, src):
+        obj = AArch64Instruction.build(cls, src)
+        obj.increment = obj.immediate
+        obj.pre_index = None
+        obj.addr = obj.args_in_out[0]
+        return obj
+
+
 class q_str_with_postinc(Str_Q):
     pattern = "str <Qa>, [<Xc>], <imm>"
     in_outs = ["Xc"]
     inputs = ["Qa"]
+
+    @classmethod
+    def make(cls, src):
+        obj = AArch64Instruction.build(cls, src)
+        obj.increment = obj.immediate
+        obj.pre_index = None
+        obj.addr = obj.args_in_out[0]
+        return obj
+
+
+class d_str_with_postinc(Str_D):
+    pattern = "str <Da>, [<Xc>], <imm>"
+    in_outs = ["Xc"]
+    inputs = ["Da"]
 
     @classmethod
     def make(cls, src):

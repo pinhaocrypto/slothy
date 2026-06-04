@@ -44,6 +44,7 @@ from slothy.targets.aarch64.aarch64_neon import (
     Stp_W,
     Ldr_D,
     Ldr_Q,
+    Str_D,
     Str_Q,
     Stp_Q,
     Ldp_Q,
@@ -197,6 +198,7 @@ execution_units = {
         Stp_W,
         Ldr_D,
         Ldr_Q,
+        Str_D,
         Str_Q,
         Stp_Q,
         Ldp_Q,
@@ -276,7 +278,7 @@ execution_units = {
 }
 
 inverse_throughput = {
-    (Ldr_X, Str_X, Ldr_D, Ldr_Q, Str_Q, Ldp_Q): 1,
+    (Ldr_X, Str_X, Ldr_D, Ldr_Q, Str_D, Str_Q, Ldp_Q): 1,
     (Ldp_X, Stp_X): 2,
     Stp_W: 1,
     Ldp_W: 1,
@@ -347,7 +349,7 @@ default_latencies = {
     # For OOO uArch we use relaxed latency modeling for load instructions
     # since the uArch will heavily front-load them anyway
     (Ldp_X, Ldp_W, Ldr_X, Ldr_D, Ldr_Q, Stp_Q, Ldp_Q): 4,
-    (Stp_X, Str_X, Str_Q): 2,
+    (Stp_X, Str_X, Str_D, Str_Q): 2,
     Stp_W: 1,
     St3: 6,  # Multiple structures, Q form, storing bytes
     St4: 4,

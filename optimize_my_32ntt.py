@@ -103,7 +103,8 @@ def configure_register_allocation(slothy: Slothy) -> None:
 
 def configure_window_optimization(slothy: Slothy) -> None:
     slothy.config.allow_useless_instructions = True
-    slothy.config.constraints.allow_spills = True
+    slothy.config.absorb_spills = False
+    slothy.config.constraints.allow_spills = False
     slothy.config.constraints.allow_reordering = True
     slothy.config.constraints.functional_only = False
     slothy.config.variable_size = True

@@ -41,6 +41,7 @@ from slothy.targets.aarch64.aarch64_neon import (
     Str_X,
     Stp_X,
     Ldr_Q,
+    Str_D,
     Str_Q,
     Ldp_Q,
     Stp_Q,
@@ -165,7 +166,7 @@ def get_min_max_objective(slothy):
 
 
 execution_units = {
-    (Ldp_X, Ldr_X, Str_X, Stp_X, Ldr_Q, Str_Q, Ldp_Q, Stp_Q): ExecutionUnit.LSU(),
+    (Ldp_X, Ldr_X, Str_X, Stp_X, Ldr_Q, Str_D, Str_Q, Ldp_Q, Stp_Q): ExecutionUnit.LSU(),
     (vuzp1, vuzp2, vzip1, Vrev, uaddlp): ExecutionUnit.V(),
     (vmov): ExecutionUnit.V(),
     VecToGprMov: ExecutionUnit.V(),
@@ -205,7 +206,7 @@ execution_units = {
 }
 
 inverse_throughput = {
-    (Ldr_X, Str_X, Ldr_Q, Str_Q): 1,
+    (Ldr_X, Str_X, Ldr_Q, Str_D, Str_Q): 1,
     (Ldp_X, Stp_X, Ldp_Q, Stp_Q): 2,
     (vuzp1, vuzp2, vzip1, uaddlp, Vrev): 1,
     VecToGprMov: 1,
@@ -243,7 +244,7 @@ inverse_throughput = {
 
 default_latencies = {
     (Ldp_X, Ldr_X, Ldr_Q, Ldp_Q): 4,
-    (Stp_X, Str_X, Str_Q, Stp_Q): 2,
+    (Stp_X, Str_X, Str_D, Str_Q, Stp_Q): 2,
     (vuzp1, vuzp2, vzip1, Vrev, uaddlp): 2,
     VecToGprMov: 2,
     veor3: 2,

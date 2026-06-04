@@ -6,7 +6,7 @@
  *
  * Forward kernel contract:
  *
- *   natural input -> complete bit-reversed output
+ *   natural input -> complete bit-reversed output in the row buffer
  *   input comes only from my_ntt.s Phase123 row buffers
  *   radix-2 Cooley-Tukey butterfly:
  *     t  = fqmul(high, twiddle)
@@ -15,10 +15,10 @@
  *
  * This source intentionally does not reduce the 32 loaded input vectors.
  * Phase123 feeds raw 3-point DFT outputs bounded by 3*(q-1).  The five lazy
- * CT stages stay below signed int16 range, so canonicalization is deferred to
- * my_ntt.s scatter/output reduction.  Do not use this kernel as a standalone
- * arbitrary-int16 NTT32 without restoring input normalization or tightening
- * the caller contract.
+ * CT stages stay below signed int16 range.  The final stage345 stores reduce
+ * to canonical range and writes the 32 Q vectors back to row_base.  Do not use
+ * this kernel as a standalone arbitrary-int16 NTT32 without restoring input
+ * normalization or tightening the caller contract.
  *
  * Layout consumed by this file:
  *
@@ -36,26 +36,32 @@
  *   1. stage12_stripe0..7 each load four work vectors, compute stage 1 and
  *      stage 2 for one stripe, then store the stage-2 values back to row_base.
  *   2. stage345_block0..3 each load one 8-vector block of stage-2 values,
- *      finish stage 3/4/5 inside that block, then store bit-reversed output.
+ *      finish stage 3/4/5 inside that block, then reduce and store the
+ *      bit-reversed output back to row_base.
  *
  * Every Slothy label boundary is also a memory boundary.  This avoids carrying
  * 32 symbolic work vectors across regions and lets each region be allocated
  * independently.
  *
  * Register contract for these symbolic regions:
- *   row_base = x4 points at the 32-Q staged input/output block.
- *   tw_ptr   = x12 is reset before each region that loads twiddle vectors.
- *   v0.h[0]  = q = 3457 and must be reserved in Slothy config.
+ *   row_base      = x4 points at the 32-Q staged input/output block.
+ *   tw_ptr        = x12 is reset before each region that loads twiddle vectors.
+ *   v0.h[0]       = q = 3457 and must be reserved in Slothy config.
+ *   v0.h[1]       = Barrett reduce constant used by final output reduction.
  */
 
-row_base .req x4
-tw_ptr   .req x12
+row_base      .req x4
+tw_ptr        .req x12
 
 /*
  * Stage 1/2 stripes.  Stripe s touches work[s], work[s+8], work[s+16],
  * and work[s+24].  The store at the end is the handoff to stage345 blocks.
  */
 
+    .global ntt32_8way
+    .global _ntt32_8way
+ntt32_8way:
+_ntt32_8way:
     adr tw_ptr, ntt32_twiddle_vecs
 _ntt32_stage12_stripe0_slothy_start:
     // Stage 1/2 stripe 0: work[0], work[8], work[16], work[24].
@@ -504,13 +510,37 @@ _ntt32_stage345_block0_slothy_start:
     mls V<t07_s5_b0>.8h, V<q07_s5_b0>.8h, v0.h[0]
     add V<w06_s5_b0>.8h, V<w06_s4_b0>.8h, V<t07_s5_b0>.8h
     sub V<w07_s5_b0>.8h, V<w06_s4_b0>.8h, V<t07_s5_b0>.8h
+    sqdmulh V<red00_s5_b0>.8h, V<w00_s5_b0>.8h, v0.h[1]
+    srshr V<red00_s5_b0>.8h, V<red00_s5_b0>.8h, #11
+    mls V<w00_s5_b0>.8h, V<red00_s5_b0>.8h, v0.h[0]
     str Q<w00_s5_b0>, [row_base, #16*0]
+    sqdmulh V<red01_s5_b0>.8h, V<w01_s5_b0>.8h, v0.h[1]
+    srshr V<red01_s5_b0>.8h, V<red01_s5_b0>.8h, #11
+    mls V<w01_s5_b0>.8h, V<red01_s5_b0>.8h, v0.h[0]
     str Q<w01_s5_b0>, [row_base, #16*1]
+    sqdmulh V<red02_s5_b0>.8h, V<w02_s5_b0>.8h, v0.h[1]
+    srshr V<red02_s5_b0>.8h, V<red02_s5_b0>.8h, #11
+    mls V<w02_s5_b0>.8h, V<red02_s5_b0>.8h, v0.h[0]
     str Q<w02_s5_b0>, [row_base, #16*2]
+    sqdmulh V<red03_s5_b0>.8h, V<w03_s5_b0>.8h, v0.h[1]
+    srshr V<red03_s5_b0>.8h, V<red03_s5_b0>.8h, #11
+    mls V<w03_s5_b0>.8h, V<red03_s5_b0>.8h, v0.h[0]
     str Q<w03_s5_b0>, [row_base, #16*3]
+    sqdmulh V<red04_s5_b0>.8h, V<w04_s5_b0>.8h, v0.h[1]
+    srshr V<red04_s5_b0>.8h, V<red04_s5_b0>.8h, #11
+    mls V<w04_s5_b0>.8h, V<red04_s5_b0>.8h, v0.h[0]
     str Q<w04_s5_b0>, [row_base, #16*4]
+    sqdmulh V<red05_s5_b0>.8h, V<w05_s5_b0>.8h, v0.h[1]
+    srshr V<red05_s5_b0>.8h, V<red05_s5_b0>.8h, #11
+    mls V<w05_s5_b0>.8h, V<red05_s5_b0>.8h, v0.h[0]
     str Q<w05_s5_b0>, [row_base, #16*5]
+    sqdmulh V<red06_s5_b0>.8h, V<w06_s5_b0>.8h, v0.h[1]
+    srshr V<red06_s5_b0>.8h, V<red06_s5_b0>.8h, #11
+    mls V<w06_s5_b0>.8h, V<red06_s5_b0>.8h, v0.h[0]
     str Q<w06_s5_b0>, [row_base, #16*6]
+    sqdmulh V<red07_s5_b0>.8h, V<w07_s5_b0>.8h, v0.h[1]
+    srshr V<red07_s5_b0>.8h, V<red07_s5_b0>.8h, #11
+    mls V<w07_s5_b0>.8h, V<red07_s5_b0>.8h, v0.h[0]
     str Q<w07_s5_b0>, [row_base, #16*7]
 _ntt32_stage345_block0_slothy_end:
 
@@ -604,13 +634,37 @@ _ntt32_stage345_block1_slothy_start:
     mls V<t15_s5_b1>.8h, V<q15_s5_b1>.8h, v0.h[0]
     add V<w14_s5_b1>.8h, V<w14_s4_b1>.8h, V<t15_s5_b1>.8h
     sub V<w15_s5_b1>.8h, V<w14_s4_b1>.8h, V<t15_s5_b1>.8h
+    sqdmulh V<red08_s5_b1>.8h, V<w08_s5_b1>.8h, v0.h[1]
+    srshr V<red08_s5_b1>.8h, V<red08_s5_b1>.8h, #11
+    mls V<w08_s5_b1>.8h, V<red08_s5_b1>.8h, v0.h[0]
     str Q<w08_s5_b1>, [row_base, #16*8]
+    sqdmulh V<red09_s5_b1>.8h, V<w09_s5_b1>.8h, v0.h[1]
+    srshr V<red09_s5_b1>.8h, V<red09_s5_b1>.8h, #11
+    mls V<w09_s5_b1>.8h, V<red09_s5_b1>.8h, v0.h[0]
     str Q<w09_s5_b1>, [row_base, #16*9]
+    sqdmulh V<red10_s5_b1>.8h, V<w10_s5_b1>.8h, v0.h[1]
+    srshr V<red10_s5_b1>.8h, V<red10_s5_b1>.8h, #11
+    mls V<w10_s5_b1>.8h, V<red10_s5_b1>.8h, v0.h[0]
     str Q<w10_s5_b1>, [row_base, #16*10]
+    sqdmulh V<red11_s5_b1>.8h, V<w11_s5_b1>.8h, v0.h[1]
+    srshr V<red11_s5_b1>.8h, V<red11_s5_b1>.8h, #11
+    mls V<w11_s5_b1>.8h, V<red11_s5_b1>.8h, v0.h[0]
     str Q<w11_s5_b1>, [row_base, #16*11]
+    sqdmulh V<red12_s5_b1>.8h, V<w12_s5_b1>.8h, v0.h[1]
+    srshr V<red12_s5_b1>.8h, V<red12_s5_b1>.8h, #11
+    mls V<w12_s5_b1>.8h, V<red12_s5_b1>.8h, v0.h[0]
     str Q<w12_s5_b1>, [row_base, #16*12]
+    sqdmulh V<red13_s5_b1>.8h, V<w13_s5_b1>.8h, v0.h[1]
+    srshr V<red13_s5_b1>.8h, V<red13_s5_b1>.8h, #11
+    mls V<w13_s5_b1>.8h, V<red13_s5_b1>.8h, v0.h[0]
     str Q<w13_s5_b1>, [row_base, #16*13]
+    sqdmulh V<red14_s5_b1>.8h, V<w14_s5_b1>.8h, v0.h[1]
+    srshr V<red14_s5_b1>.8h, V<red14_s5_b1>.8h, #11
+    mls V<w14_s5_b1>.8h, V<red14_s5_b1>.8h, v0.h[0]
     str Q<w14_s5_b1>, [row_base, #16*14]
+    sqdmulh V<red15_s5_b1>.8h, V<w15_s5_b1>.8h, v0.h[1]
+    srshr V<red15_s5_b1>.8h, V<red15_s5_b1>.8h, #11
+    mls V<w15_s5_b1>.8h, V<red15_s5_b1>.8h, v0.h[0]
     str Q<w15_s5_b1>, [row_base, #16*15]
 _ntt32_stage345_block1_slothy_end:
 
@@ -707,13 +761,37 @@ _ntt32_stage345_block2_slothy_start:
     mls V<t23_s5_b2>.8h, V<q23_s5_b2>.8h, v0.h[0]
     add V<w22_s5_b2>.8h, V<w22_s4_b2>.8h, V<t23_s5_b2>.8h
     sub V<w23_s5_b2>.8h, V<w22_s4_b2>.8h, V<t23_s5_b2>.8h
+    sqdmulh V<red16_s5_b2>.8h, V<w16_s5_b2>.8h, v0.h[1]
+    srshr V<red16_s5_b2>.8h, V<red16_s5_b2>.8h, #11
+    mls V<w16_s5_b2>.8h, V<red16_s5_b2>.8h, v0.h[0]
     str Q<w16_s5_b2>, [row_base, #16*16]
+    sqdmulh V<red17_s5_b2>.8h, V<w17_s5_b2>.8h, v0.h[1]
+    srshr V<red17_s5_b2>.8h, V<red17_s5_b2>.8h, #11
+    mls V<w17_s5_b2>.8h, V<red17_s5_b2>.8h, v0.h[0]
     str Q<w17_s5_b2>, [row_base, #16*17]
+    sqdmulh V<red18_s5_b2>.8h, V<w18_s5_b2>.8h, v0.h[1]
+    srshr V<red18_s5_b2>.8h, V<red18_s5_b2>.8h, #11
+    mls V<w18_s5_b2>.8h, V<red18_s5_b2>.8h, v0.h[0]
     str Q<w18_s5_b2>, [row_base, #16*18]
+    sqdmulh V<red19_s5_b2>.8h, V<w19_s5_b2>.8h, v0.h[1]
+    srshr V<red19_s5_b2>.8h, V<red19_s5_b2>.8h, #11
+    mls V<w19_s5_b2>.8h, V<red19_s5_b2>.8h, v0.h[0]
     str Q<w19_s5_b2>, [row_base, #16*19]
+    sqdmulh V<red20_s5_b2>.8h, V<w20_s5_b2>.8h, v0.h[1]
+    srshr V<red20_s5_b2>.8h, V<red20_s5_b2>.8h, #11
+    mls V<w20_s5_b2>.8h, V<red20_s5_b2>.8h, v0.h[0]
     str Q<w20_s5_b2>, [row_base, #16*20]
+    sqdmulh V<red21_s5_b2>.8h, V<w21_s5_b2>.8h, v0.h[1]
+    srshr V<red21_s5_b2>.8h, V<red21_s5_b2>.8h, #11
+    mls V<w21_s5_b2>.8h, V<red21_s5_b2>.8h, v0.h[0]
     str Q<w21_s5_b2>, [row_base, #16*21]
+    sqdmulh V<red22_s5_b2>.8h, V<w22_s5_b2>.8h, v0.h[1]
+    srshr V<red22_s5_b2>.8h, V<red22_s5_b2>.8h, #11
+    mls V<w22_s5_b2>.8h, V<red22_s5_b2>.8h, v0.h[0]
     str Q<w22_s5_b2>, [row_base, #16*22]
+    sqdmulh V<red23_s5_b2>.8h, V<w23_s5_b2>.8h, v0.h[1]
+    srshr V<red23_s5_b2>.8h, V<red23_s5_b2>.8h, #11
+    mls V<w23_s5_b2>.8h, V<red23_s5_b2>.8h, v0.h[0]
     str Q<w23_s5_b2>, [row_base, #16*23]
 _ntt32_stage345_block2_slothy_end:
 
@@ -810,15 +888,41 @@ _ntt32_stage345_block3_slothy_start:
     mls V<t31_s5_b3>.8h, V<q31_s5_b3>.8h, v0.h[0]
     add V<w30_s5_b3>.8h, V<w30_s4_b3>.8h, V<t31_s5_b3>.8h
     sub V<w31_s5_b3>.8h, V<w30_s4_b3>.8h, V<t31_s5_b3>.8h
+    sqdmulh V<red24_s5_b3>.8h, V<w24_s5_b3>.8h, v0.h[1]
+    srshr V<red24_s5_b3>.8h, V<red24_s5_b3>.8h, #11
+    mls V<w24_s5_b3>.8h, V<red24_s5_b3>.8h, v0.h[0]
     str Q<w24_s5_b3>, [row_base, #16*24]
+    sqdmulh V<red25_s5_b3>.8h, V<w25_s5_b3>.8h, v0.h[1]
+    srshr V<red25_s5_b3>.8h, V<red25_s5_b3>.8h, #11
+    mls V<w25_s5_b3>.8h, V<red25_s5_b3>.8h, v0.h[0]
     str Q<w25_s5_b3>, [row_base, #16*25]
+    sqdmulh V<red26_s5_b3>.8h, V<w26_s5_b3>.8h, v0.h[1]
+    srshr V<red26_s5_b3>.8h, V<red26_s5_b3>.8h, #11
+    mls V<w26_s5_b3>.8h, V<red26_s5_b3>.8h, v0.h[0]
     str Q<w26_s5_b3>, [row_base, #16*26]
+    sqdmulh V<red27_s5_b3>.8h, V<w27_s5_b3>.8h, v0.h[1]
+    srshr V<red27_s5_b3>.8h, V<red27_s5_b3>.8h, #11
+    mls V<w27_s5_b3>.8h, V<red27_s5_b3>.8h, v0.h[0]
     str Q<w27_s5_b3>, [row_base, #16*27]
+    sqdmulh V<red28_s5_b3>.8h, V<w28_s5_b3>.8h, v0.h[1]
+    srshr V<red28_s5_b3>.8h, V<red28_s5_b3>.8h, #11
+    mls V<w28_s5_b3>.8h, V<red28_s5_b3>.8h, v0.h[0]
     str Q<w28_s5_b3>, [row_base, #16*28]
+    sqdmulh V<red29_s5_b3>.8h, V<w29_s5_b3>.8h, v0.h[1]
+    srshr V<red29_s5_b3>.8h, V<red29_s5_b3>.8h, #11
+    mls V<w29_s5_b3>.8h, V<red29_s5_b3>.8h, v0.h[0]
     str Q<w29_s5_b3>, [row_base, #16*29]
+    sqdmulh V<red30_s5_b3>.8h, V<w30_s5_b3>.8h, v0.h[1]
+    srshr V<red30_s5_b3>.8h, V<red30_s5_b3>.8h, #11
+    mls V<w30_s5_b3>.8h, V<red30_s5_b3>.8h, v0.h[0]
     str Q<w30_s5_b3>, [row_base, #16*30]
+    sqdmulh V<red31_s5_b3>.8h, V<w31_s5_b3>.8h, v0.h[1]
+    srshr V<red31_s5_b3>.8h, V<red31_s5_b3>.8h, #11
+    mls V<w31_s5_b3>.8h, V<red31_s5_b3>.8h, v0.h[0]
     str Q<w31_s5_b3>, [row_base, #16*31]
 _ntt32_stage345_block3_slothy_end:
+
+    ret
 
 .align 4
 ntt32_twiddle_vecs:

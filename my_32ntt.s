@@ -7,10 +7,18 @@
  * Forward kernel contract:
  *
  *   natural input -> complete bit-reversed output
+ *   input comes only from my_ntt.s Phase123 row buffers
  *   radix-2 Cooley-Tukey butterfly:
  *     t  = fqmul(high, twiddle)
  *     lo = low + t
  *     hi = low - t
+ *
+ * This source intentionally does not reduce the 32 loaded input vectors.
+ * Phase123 feeds raw 3-point DFT outputs bounded by 3*(q-1).  The five lazy
+ * CT stages stay below signed int16 range, so canonicalization is deferred to
+ * my_ntt.s scatter/output reduction.  Do not use this kernel as a standalone
+ * arbitrary-int16 NTT32 without restoring input normalization or tightening
+ * the caller contract.
  *
  * Layout consumed by this file:
  *

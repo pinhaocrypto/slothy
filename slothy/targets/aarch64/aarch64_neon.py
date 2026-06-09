@@ -1377,6 +1377,12 @@ class vsub(AArch64Instruction):
     outputs = ["Va"]
 
 
+class vneg(AArch64Instruction):
+    pattern = "neg <Va>.<dt>, <Vb>.<dt>"
+    inputs = ["Vb"]
+    outputs = ["Va"]
+
+
 ############################
 #                          #
 # Some LSU instructions    #
@@ -1789,6 +1795,60 @@ class q_ld1_with_postinc(Ldr_Q):
         return obj
 
 
+class q_ld1_2_with_postinc(Ldr_Q):
+    pattern = "ld1 {<Va>.<dt>, <Vb>.<dt>}, [<Xc>], <imm>"
+    in_outs = ["Xc"]
+    outputs = ["Va", "Vb"]
+
+    @classmethod
+    def make(cls, src):
+        obj = AArch64Instruction.build(cls, src)
+        obj.increment = obj.immediate
+        obj.pre_index = None
+        obj.addr = obj.args_in_out[0]
+        obj.args_out_combinations = [
+            ([0, 1], [[f"v{i}", f"v{i+1}"] for i in range(0, 31)])
+        ]
+        return obj
+
+
+class q_ld1_3_with_postinc(Ldr_Q):
+    pattern = "ld1 {<Va>.<dt>, <Vb>.<dt>, <Vc>.<dt>}, [<Xc>], <imm>"
+    in_outs = ["Xc"]
+    outputs = ["Va", "Vb", "Vc"]
+
+    @classmethod
+    def make(cls, src):
+        obj = AArch64Instruction.build(cls, src)
+        obj.increment = obj.immediate
+        obj.pre_index = None
+        obj.addr = obj.args_in_out[0]
+        obj.args_out_combinations = [
+            ([0, 1, 2], [[f"v{i}", f"v{i+1}", f"v{i+2}"] for i in range(0, 30)])
+        ]
+        return obj
+
+
+class q_ld1_4_with_postinc(Ldr_Q):
+    pattern = "ld1 {<Va>.<dt>, <Vb>.<dt>, <Vc>.<dt>, <Vd>.<dt>}, [<Xc>], <imm>"
+    in_outs = ["Xc"]
+    outputs = ["Va", "Vb", "Vc", "Vd"]
+
+    @classmethod
+    def make(cls, src):
+        obj = AArch64Instruction.build(cls, src)
+        obj.increment = obj.immediate
+        obj.pre_index = None
+        obj.addr = obj.args_in_out[0]
+        obj.args_out_combinations = [
+            (
+                [0, 1, 2, 3],
+                [[f"v{i}", f"v{i+1}", f"v{i+2}", f"v{i+3}"] for i in range(0, 29)],
+            )
+        ]
+        return obj
+
+
 class q_ldp_with_postinc(Ldp_Q):
     pattern = "ldp <Qa>, <Qb>, [<Xc>], <imm>"
     in_outs = ["Xc"]
@@ -2062,8 +2122,8 @@ class q_stp_with_postinc(Stp_Q):
         return obj
 
 
-class q_st1_2_with_postinc(Stp_Q):
-    pattern = "st1 {<Va>.<dt0>, <Vb>.<dt1>}, [<Xc>], <imm>"
+class q_st1_2_with_postinc(Str_Q):
+    pattern = "st1 {<Va>.<dt>, <Vb>.<dt>}, [<Xc>], <imm>"
     inputs = ["Va", "Vb"]
     in_outs = ["Xc"]
 

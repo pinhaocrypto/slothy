@@ -61,6 +61,7 @@ from slothy.targets.aarch64.aarch64_neon import (
     Str_Q,
     vmov,
     vadd,
+    vneg,
     vxtn,
     vshrn,
     vusra,
@@ -398,6 +399,8 @@ execution_units = {
     is_dform_form_of(vuzp2): [ExecutionUnit.VEC0, ExecutionUnit.VEC1],
     is_qform_form_of(vsub): [[ExecutionUnit.VEC0, ExecutionUnit.VEC1]],
     is_dform_form_of(vsub): [ExecutionUnit.VEC0, ExecutionUnit.VEC1],
+    is_qform_form_of(vneg): [[ExecutionUnit.VEC0, ExecutionUnit.VEC1]],
+    is_dform_form_of(vneg): [ExecutionUnit.VEC0, ExecutionUnit.VEC1],
     is_qform_form_of(vadd): [[ExecutionUnit.VEC0, ExecutionUnit.VEC1]],
     is_dform_form_of(vadd): [ExecutionUnit.VEC0, ExecutionUnit.VEC1],
     is_qform_form_of(vshl): [[ExecutionUnit.VEC0, ExecutionUnit.VEC1]],
@@ -502,6 +505,7 @@ inverse_throughput = {
     (
         vadd,
         vsub,
+        vneg,
         vmov,
         vmul,
         vmul_lane,
@@ -612,8 +616,8 @@ inverse_throughput = {
 default_latencies = {
     vdup_w: 3,
     vmov: 2,
-    is_qform_form_of([vadd, vsub]): 3,
-    is_dform_form_of([vadd, vsub]): 2,
+    is_qform_form_of([vadd, vsub, vneg]): 3,
+    is_dform_form_of([vadd, vsub, vneg]): 2,
     (trn1, trn2, ASimdCompare): 2,
     (
         vmul,

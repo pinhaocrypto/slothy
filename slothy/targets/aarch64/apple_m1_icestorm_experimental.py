@@ -47,6 +47,7 @@ from slothy.targets.aarch64.aarch64_neon import (
     vmov,
     vand,
     vadd,
+    vneg,
     VShiftImmediateBasic,
     vusra,
     vmul,
@@ -199,7 +200,7 @@ execution_units = {
         VShiftImmediateBasic,
         VShiftImmediateRounding,
     ): ExecutionUnit.V(),
-    (vadd, vsub, trn1, trn2): ExecutionUnit.V(),
+    (vadd, vsub, vneg, trn1, trn2): ExecutionUnit.V(),
     Vins: ExecutionUnit.V(),  # guessed
     (umov_d, mov_d): ExecutionUnit.V(),  # guessed
     (mov_d01, mov_b00): ExecutionUnit.V(),  # guessed
@@ -283,7 +284,7 @@ inverse_throughput = {
         VShiftImmediateBasic,
         VShiftImmediateRounding,
     ): 1,
-    (vadd, vsub, trn1, trn2): 1,
+    (vadd, vsub, vneg, trn1, trn2): 1,
     Vins: 2,  # guessed
     (umov_d, mov_d): 2,  # guessed
     (mov_d01, mov_b00): 1,  # guessed
@@ -351,7 +352,7 @@ default_latencies = {
     ): 3,
     VShiftImmediateRounding: 3,
     (VShiftImmediateBasic, vand, vbic, ASimdCompare): 2,
-    (vadd, vsub, trn1, trn2): 2,
+    (vadd, vsub, vneg, trn1, trn2): 2,
     Vins: 2,  # 2 or <= 9
     (umov_d, mov_d): 4,  # <= 7
     (mov_d01, mov_b00): 2,  # guessed

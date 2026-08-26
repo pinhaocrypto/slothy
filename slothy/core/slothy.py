@@ -585,6 +585,7 @@ class Slothy:
         :type postamble_label: str
         :param forced_loop_type: Forces the loop to be parsed as a certain type.
         :type forced_loop_type: any
+        :raises ValueError: If the target requests an invalid loop alignment.
         """
 
         logger = self.logger.getChild(loop_lbl)
@@ -698,7 +699,7 @@ class Slothy:
         else:
             jump_if_empty = None
 
-        optimized_code += SourceLine.read_multiline(
+        loop_start_code = SourceLine.read_multiline(
             loop.start(
                 loop_cnt,
                 indentation=self.config.indentation,
@@ -711,6 +712,26 @@ class Slothy:
                 register_aliases=c.register_aliases,
             )
         )
+        loop_alignment = getattr(self.target, "loop_alignment_bytes", None)
+        if loop_alignment is not None:
+            if (
+                not isinstance(loop_alignment, int)
+                or loop_alignment <= 0
+                or loop_alignment & (loop_alignment - 1)
+            ):
+                raise ValueError(
+                    "target.loop_alignment_bytes must be a positive power of two"
+                )
+            alignment_power = loop_alignment.bit_length() - 1
+            label = f"{loop_lbl}:"
+            for idx, line in enumerate(loop_start_code):
+                if line.text.strip() == label:
+                    loop_start_code.insert(
+                        idx,
+                        SourceLine(f".p2align {alignment_power}"),
+                    )
+                    break
+        optimized_code += loop_start_code
         optimized_code += indented(kernel_code)
         optimized_code += SourceLine.read_multiline(
             loop.end(other_data, indentation=self.config.indentation)

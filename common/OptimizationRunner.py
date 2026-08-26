@@ -40,6 +40,7 @@ import slothy.targets.arm_v81m.cortex_m85r1 as Target_CortexM85r1
 import slothy.targets.aarch64.aarch64_neon as AArch64_Neon
 import slothy.targets.aarch64.cortex_a55 as Target_CortexA55
 import slothy.targets.aarch64.cortex_a72_frontend as Target_CortexA72
+import slothy.targets.aarch64.cortex_a76 as Target_CortexA76
 import slothy.targets.aarch64.neoverse_n1_experimental as Target_NeoverseN1
 import slothy.targets.aarch64.aarch64_big_experimental as Target_AArch64Big
 import slothy.targets.aarch64.apple_m1_firestorm_experimental as Target_AppleM1_firestorm
@@ -51,6 +52,7 @@ import slothy.targets.riscv.xuantie_c908 as Target_XuanTieC908
 target_label_dict = {
     Target_CortexA55: "a55",
     Target_CortexA72: "a72",
+    Target_CortexA76: "a76",
     Target_NeoverseN1: "neoverse_n1",
     Target_CortexM7: "m7",
     Target_CortexM55r1: "m55",

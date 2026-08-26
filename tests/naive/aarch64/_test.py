@@ -29,6 +29,7 @@ from common.OptimizationRunner import OptimizationRunner
 import slothy.targets.aarch64.aarch64_neon as AArch64_Neon
 import slothy.targets.aarch64.cortex_a55 as Target_CortexA55
 import slothy.targets.aarch64.cortex_a72_frontend as Target_CortexA72
+import slothy.targets.aarch64.cortex_a76 as Target_CortexA76
 import slothy.targets.aarch64.neoverse_n1_experimental as Target_NeoverseN1
 import slothy.targets.aarch64.aarch64_big_experimental as Target_AArch64Big
 
@@ -475,6 +476,7 @@ class AArch64Directives(OptimizationRunner):
 test_instances = [
     Instructions(),
     Instructions(target=Target_CortexA72),
+    Instructions(target=Target_CortexA76),
     Instructions(target=Target_NeoverseN1),
     AArch64Example0(),
     AArch64Example0(target=Target_CortexA72),

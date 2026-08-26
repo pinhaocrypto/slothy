@@ -2644,41 +2644,69 @@ class SlothyBase(LockAttributes):
             return
 
         for t in self._get_nodes():
-            cycles_unit_occupied = self.target.get_inverse_throughput(t.inst)
-            units = self.target.get_units(t.inst)
-            if len(units) == 1:
-                if isinstance(units[0], list):
-                    # multiple execution units in use
-                    for unit in units[0]:
-                        t.exec_unit_choices = None
-                        t.exec = self._NewIntervalVar(
-                            t.cycle_start_var, cycles_unit_occupied, t.cycle_end_var, ""
-                        )
-                        self._model.intervals_for_unit[unit].append(t.exec)
-                else:
-                    t.exec_unit_choices = None
-                    unit = units[0]
-                    t.exec = self._NewIntervalVar(
-                        t.cycle_start_var, cycles_unit_occupied, t.cycle_end_var, ""
-                    )
-                    self._model.intervals_for_unit[unit].append(t.exec)
+            if hasattr(self.target, "get_resource_usages"):
+                # A resource-usage alternative is a mapping from every unit used by
+                # that alternative to the number of cycles for which it is occupied.
+                # This is needed for instructions which split into heterogeneous uops,
+                # for example an address uop using an LSU for one cycle and a store-data
+                # uop using a vector pipe for two cycles.
+                alternatives = self.target.get_resource_usages(t.inst)
             else:
-                t.unique_unit = False
-                t.exec_unit_choices = {}
+                cycles = self.target.get_inverse_throughput(t.inst)
+                units = self.target.get_units(t.inst)
+                alternatives = []
                 for unit_choices in units:
                     if not isinstance(unit_choices, list):
                         unit_choices = [unit_choices]
-                    for unit in unit_choices:
-                        unit_var = self._NewBoolVar(f"[{t.inst}].unit_choice.{unit}")
-                        t.exec_unit_choices[unit] = unit_var
-                        t.exec = self._NewOptionalIntervalVar(
-                            t.cycle_start_var,
-                            cycles_unit_occupied,
-                            t.cycle_end_var,
-                            unit_var,
-                            f"{t.varname}_usage_{unit}",
-                        )
-                        self._model.intervals_for_unit[unit].append(t.exec)
+                    alternatives.append({unit: cycles for unit in unit_choices})
+
+            if not alternatives or any(not usage for usage in alternatives):
+                raise SlothyException(
+                    f"Invalid execution resource usage for instruction {t.inst}"
+                )
+
+            durations = [
+                duration for usage in alternatives for duration in usage.values()
+            ]
+            if any(
+                not isinstance(duration, int) or duration <= 0 for duration in durations
+            ):
+                raise SlothyException(
+                    f"Invalid execution resource duration for instruction {t.inst}"
+                )
+            self._Add(t.cycle_end_var == t.cycle_start_var + max(durations))
+
+            if len(alternatives) == 1:
+                t.exec_unit_choices = None
+                for unit, duration in alternatives[0].items():
+                    interval = self._NewIntervalVar(
+                        t.cycle_start_var,
+                        duration,
+                        t.cycle_start_var + duration,
+                        f"{t.varname()}_usage_{unit}",
+                    )
+                    self._model.intervals_for_unit[unit].append(interval)
+                continue
+
+            # All units in one alternative share the same presence literal. The old
+            # representation created a separate literal for every unit, which made
+            # the units within a multi-unit alternative mutually exclusive.
+            t.unique_unit = False
+            t.exec_unit_choices = []
+            for choice_idx, usage in enumerate(alternatives):
+                choice_var = self._NewBoolVar(
+                    f"[{t.inst}].resource_choice.{choice_idx}"
+                )
+                t.exec_unit_choices.append(choice_var)
+                for unit, duration in usage.items():
+                    interval = self._NewOptionalIntervalVar(
+                        t.cycle_start_var,
+                        duration,
+                        t.cycle_start_var + duration,
+                        choice_var,
+                        f"{t.varname()}_usage_{choice_idx}_{unit}",
+                    )
+                    self._model.intervals_for_unit[unit].append(interval)
 
     # ================================================================
     #                  VARIABLES (Dependency tracking)               #
@@ -3647,7 +3675,44 @@ class SlothyBase(LockAttributes):
     # ================================================================#
 
     def _add_constraints_misc(self):
+        self._add_constraints_dispatch_rate()
         self.target.add_further_constraints(self)
+
+    def _add_constraints_dispatch_rate(self):
+        """Limit weighted dispatch bandwidth for targets exposing uop counts.
+
+        ``issue_rate`` continues to describe the number of architectural
+        instructions (or Mops) accepted per cycle. A target may additionally
+        provide ``dispatch_rate`` and ``get_dispatch_uops()`` when one instruction
+        can expand into multiple uops at dispatch.
+        """
+        if self.config.constraints.functional_only:
+            return
+        if not hasattr(self.target, "dispatch_rate"):
+            return
+        if not hasattr(self.target, "get_dispatch_uops"):
+            raise SlothyException(
+                "Target defines dispatch_rate without get_dispatch_uops()"
+            )
+
+        intervals = []
+        demands = []
+        for t in self._get_nodes():
+            demand = self.target.get_dispatch_uops(t.inst)
+            if not isinstance(demand, int) or demand <= 0:
+                raise SlothyException(
+                    f"Invalid dispatch uop count for instruction {t.inst}: {demand}"
+                )
+            intervals.append(
+                self._NewIntervalVar(
+                    t.cycle_start_var,
+                    1,
+                    t.cycle_start_var + 1,
+                    f"{t.varname()}_dispatch",
+                )
+            )
+            demands.append(demand)
+        self._AddCumulative(intervals, demands, self.target.dispatch_rate)
 
     def get_inst_pairs(self, cond_fst=None, cond_snd=None, cond=None):
         """Yields all instruction pairs satisfying the provided predicate."""
@@ -3689,7 +3754,7 @@ class SlothyBase(LockAttributes):
         for t in self._get_nodes():
             if t.exec_unit_choices is None:
                 continue
-            self._AddExactlyOne(t.exec_unit_choices.values())
+            self._AddExactlyOne(t.exec_unit_choices)
 
     # ==============================================================#
     #                      CONSTRAINT (Code size)                   #
@@ -4062,6 +4127,9 @@ class SlothyBase(LockAttributes):
 
     def _AddAtLeastOne(self, lst):
         return self._model.cp_model.AddAtLeastOne(lst)
+
+    def _AddCumulative(self, intervals, demands, capacity):
+        return self._model.cp_model.AddCumulative(intervals, demands, capacity)
 
     def _AddAbsEq(self, dst, expr):
         return self._model.cp_model.AddAbsEquality(dst, expr)

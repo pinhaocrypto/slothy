@@ -35,6 +35,7 @@ import slothy.targets.arm_v81m.cortex_m85r1 as Target_CortexM85r1
 
 import slothy.targets.aarch64.cortex_a55 as Target_CortexA55
 import slothy.targets.aarch64.cortex_a72_frontend as Target_CortexA72
+import slothy.targets.aarch64.cortex_a76 as Target_CortexA76
 import slothy.targets.aarch64.aarch64_big_experimental as Target_AArch64Big
 import slothy.targets.aarch64.apple_m1_firestorm_experimental as Target_AppleM1_firestorm
 import slothy.targets.aarch64.apple_m1_icestorm_experimental as Target_AppleM1_icestorm
@@ -98,6 +99,7 @@ def main():
             Target_CortexM85r1.__name__,
             Target_CortexA55.__name__,
             Target_CortexA72.__name__,
+            Target_CortexA76.__name__,
             Target_AppleM1_firestorm.__name__,
             Target_AppleM1_icestorm.__name__,
             Target_AArch64Big.__name__,

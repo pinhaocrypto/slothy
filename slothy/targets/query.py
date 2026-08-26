@@ -40,6 +40,7 @@ from slothy.targets.arm_v81m import helium_experimental as Target_Helium_Experim
 
 from slothy.targets.aarch64 import aarch64_neon as AArch64_Neon
 from slothy.targets.aarch64 import cortex_a55 as Target_CortexA55
+from slothy.targets.aarch64 import cortex_a76 as Target_CortexA76
 from slothy.targets.aarch64 import cortex_a72_frontend as Target_CortexA72_Frontend
 from slothy.targets.aarch64 import (
     neoverse_n1_experimental as Target_NeoverseN1_Experimental,
@@ -77,6 +78,7 @@ class Archery:
         "Arm_Helium_Experimental": Target_Helium_Experimental,
         "Arm_Cortex_M7": Target_CortexM7,
         "Arm_Cortex_A55": Target_CortexA55,
+        "Arm_Cortex_A76": Target_CortexA76,
         "Arm_Cortex_A72_frontend": Target_CortexA72_Frontend,
         "Arm_Neoverse_N1_experimental": Target_NeoverseN1_Experimental,
         "Arm_Big_experimental": Target_Big_Experimental,

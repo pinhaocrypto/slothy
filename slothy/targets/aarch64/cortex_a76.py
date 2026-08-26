@@ -1,0 +1,498 @@
+#
+# Copyright (c) 2022 Arm Limited
+# Copyright (c) 2022 Hanno Becker
+# Copyright (c) 2023 Amin Abdulrahman, Matthias Kannwischer
+# SPDX-License-Identifier: MIT
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+#
+# Author: Hanno Becker <hannobecker@posteo.de>
+#
+
+"""
+Experimental Cortex-A76 model derived from the related Neoverse N1 model.
+
+Signed AdvSIMD SMULL/SMLAL timing is validated on a Raspberry Pi 5
+Cortex-A76 r4p1 by two independent benchmark paths:
+https://github.com/cheng-wei-huang0612/cortex-a76-smull-forwarding
+
+The measurements establish V0 execution, reciprocal throughput 1, ordinary
+latency 4, SMULL-to-SMLAL accumulator latency 3, and SMLAL accumulator
+self-forwarding latency 1 for both 16x16-to-32 and 32x32-to-64 forms. Other
+entries remain approximations inherited from the Neoverse N1 model.
+"""
+
+from enum import Enum
+from slothy.helper import lookup_multidict
+from slothy.targets.aarch64.aarch64_neon import (
+    is_neon_instruction,
+    find_class,
+    all_subclass_leaves,
+    Ldp_X,
+    Ldp_W,
+    Ldr_X,
+    Str_X,
+    Stp_X,
+    Stp_W,
+    Ldr_D,
+    Ldr_Q,
+    Str_Q,
+    Stp_Q,
+    Ldp_Q,
+    Vrev,
+    uaddlp,
+    vmov,
+    vmovi,
+    vadd,
+    vxtn,
+    vusra,
+    vmul,
+    vdup,
+    vdup_w,
+    AESInstruction,
+    Transpose,
+    AArch64NeonLogical,
+    VShiftImmediateBasic,
+    VShiftRegBasic,
+    AArch64BasicArithmetic,
+    AArch64ConditionalSelect,
+    AArch64ConditionalCompare,
+    AArch64Logical,
+    AArch64LogicalShifted,
+    AArch64Move,
+    AArch64Shift,
+    Tst,
+    AArch64ShiftedArithmetic,
+    AArch64HighMultiply,
+    AArch64Multiply,
+    AArch64CRC32,
+    VecToGprMov,
+    q_st1_4_with_postinc,
+    St3,
+    St4,
+    Vzip,
+    vsub,
+    vsrshr,
+    Vmul,
+    Vmla,
+    Vqdmulh,
+    Vmull,
+    Vmlal,
+    vsmull,
+    vsmull2,
+    vsmull_lane,
+    vsmull2_lane,
+    vsmlal,
+    vsmlal2,
+    vsmlal_lane,
+    vsmlal2_lane,
+    umull_wform,
+    vmul_lane,
+    vmla,
+    vmla_lane,
+    AArch64NeonCount,
+    vmls,
+    ASimdCompare,
+    vmls_lane,
+    vext,
+    AArch64NeonShiftInsert,
+    vtbl,
+    vtbl_2,
+    vuaddlv_sform,
+    fmov_s_form,  # from vec to gen reg
+    fmov_d_form,  # from vec to gen reg (64-bit)
+    fmov_0,
+    fmov_0_force_output,
+    fmov_1,
+    fmov_1_force_output,
+    q_ldr1_stack,
+    Q_Ld2_Lane_Post_Inc,
+    q_ld2_lane_s,
+    Ld4,
+    Ld3,
+    Ld2,
+    q_ld1_2,
+    St2,
+    mov_wtov_s,
+    mov_vtov_d,
+    lsr,
+    movk_imm_lsl,
+)
+
+issue_rate = 4
+llvm_mca_target = "cortex-a76"
+
+
+class ExecutionUnit(Enum):
+    """Enumeration of execution units in approximative Cortex-A76 SLOTHY model"""
+
+    SCALAR_I0 = 0
+    SCALAR_I1 = 1
+    SCALAR_I2 = 2
+    SCALAR_M = 2  # Overlaps with third I pipeline
+    LSU0 = 3
+    LSU1 = 4
+    VEC0 = 5
+    VEC1 = 6
+
+    def __repr__(self):
+        return self.name
+
+    @classmethod
+    def I(cls):  # noqa: E743
+        return [
+            ExecutionUnit.SCALAR_I0,
+            ExecutionUnit.SCALAR_I1,
+            ExecutionUnit.SCALAR_I2,
+        ]
+
+    @classmethod
+    def M(cls):
+        return [ExecutionUnit.SCALAR_M]
+
+    @classmethod
+    def V(cls):
+        return [ExecutionUnit.VEC0, ExecutionUnit.VEC1]
+
+    @classmethod
+    def V0(cls):
+        return [ExecutionUnit.VEC0]
+
+    @classmethod
+    def V1(cls):
+        return [ExecutionUnit.VEC1]
+
+    @classmethod
+    def LSU(cls):
+        return [ExecutionUnit.LSU0, ExecutionUnit.LSU1]
+
+
+# Opaque functions called by SLOTHY to add further microarchitecture-
+# specific constraints which are not encapsulated by the general framework.
+def add_further_constraints(slothy):
+    if slothy.config.constraints.functional_only:
+        return
+    slothy.restrict_slots_for_instructions_by_property(is_neon_instruction, [0, 1])
+    slothy.restrict_slots_for_instructions_by_property(
+        lambda t: is_neon_instruction(t) is False, [1, 2, 3]
+    )
+
+
+def has_min_max_objective(config):
+    _ = config
+    return False
+
+
+def get_min_max_objective(slothy):
+    _ = slothy
+
+
+execution_units = {
+    (
+        Ldp_X,
+        Ldp_W,
+        Ldr_X,
+        Str_X,
+        Stp_X,
+        Stp_W,
+        Ldr_D,
+        Ldr_Q,
+        Str_Q,
+        Stp_Q,
+        Ldp_Q,
+        Ld4,
+        Ld3,
+        Ld2,
+        q_ld1_2,
+    ): ExecutionUnit.LSU(),
+    # TODO: The following would be more accurate, but does not
+    #       necessarily lead to better results, while making the
+    #       optimization slower. Investigate...
+    #
+    # Ldr_Q)            : ExecutionUnit.LSU(),
+    # Str_Q : [[ExecutionUnit.VEC0, ExecutionUnit.LSU0],
+    #          [ExecutionUnit.VEC0, ExecutionUnit.LSU1],
+    #          [ExecutionUnit.VEC1, ExecutionUnit.LSU0],
+    #          [ExecutionUnit.VEC1, ExecutionUnit.LSU1]],
+    # TODO: As above, this should somehow occupy both V and L
+    q_st1_4_with_postinc: ExecutionUnit.V(),
+    St2: ExecutionUnit.V(),
+    St3: ExecutionUnit.V(),
+    St4: ExecutionUnit.V(),
+    ASimdCompare: ExecutionUnit.V(),
+    vtbl: ExecutionUnit.V(),
+    vtbl_2: ExecutionUnit.V(),
+    (Vzip, Vrev, uaddlp): ExecutionUnit.V(),
+    AArch64NeonCount: ExecutionUnit.V(),
+    (vmov): ExecutionUnit.V(),
+    VecToGprMov: ExecutionUnit.V(),
+    Transpose: ExecutionUnit.V(),
+    (vmovi): ExecutionUnit.V(),
+    (vadd, vsub): ExecutionUnit.V(),
+    (vxtn): ExecutionUnit.V(),
+    VShiftImmediateBasic: ExecutionUnit.V1(),
+    VShiftRegBasic: ExecutionUnit.V1(),
+    (
+        AArch64NeonShiftInsert,
+        vsrshr,
+    ): ExecutionUnit.V1(),
+    vusra: ExecutionUnit.V1(),
+    AESInstruction: ExecutionUnit.V0(),
+    (Vmul, Vmla, Vqdmulh, Vmull, Vmlal): ExecutionUnit.V0(),
+    AArch64NeonLogical: ExecutionUnit.V(),
+    vext: ExecutionUnit.V(),
+    (
+        AArch64BasicArithmetic,
+        AArch64ConditionalSelect,
+        AArch64ConditionalCompare,
+        AArch64Logical,
+        AArch64LogicalShifted,
+        AArch64Move,
+    ): ExecutionUnit.I(),
+    AArch64Shift: ExecutionUnit.I(),
+    Tst: ExecutionUnit.I(),
+    AArch64ShiftedArithmetic: ExecutionUnit.M(),
+    (
+        fmov_0,
+        fmov_0_force_output,
+        fmov_1,
+        fmov_1_force_output,
+    ): ExecutionUnit.M(),
+    fmov_s_form: ExecutionUnit.V1(),  # from vec to gen reg
+    fmov_d_form: ExecutionUnit.V1(),  # from vec to gen reg (64-bit)
+    umull_wform: ExecutionUnit.M(),
+    (AArch64HighMultiply, AArch64Multiply): ExecutionUnit.M(),
+    AArch64CRC32: ExecutionUnit.M(),
+    (vdup, vdup_w): ExecutionUnit.M(),
+    # 8B/8H occupies both V0, V1
+    vuaddlv_sform: [[ExecutionUnit.VEC0, ExecutionUnit.VEC1]],
+    q_ldr1_stack: ExecutionUnit.V(),
+    Q_Ld2_Lane_Post_Inc: ExecutionUnit.V(),
+    mov_wtov_s: ExecutionUnit.V(),
+    mov_vtov_d: ExecutionUnit.V(),
+    lsr: ExecutionUnit.I(),
+    movk_imm_lsl: ExecutionUnit.I(),
+    q_ld2_lane_s: ExecutionUnit.V(),
+}
+
+inverse_throughput = {
+    (Ldr_X, Str_X, Ldr_D, Ldr_Q, Str_Q, Ldp_Q): 1,
+    (Ldp_X, Stp_X): 2,
+    Stp_W: 1,
+    Ldp_W: 1,
+    AArch64NeonCount: 1,
+    Stp_Q: 2,
+    St3: 3,  # Multiple structures, Q form, storing bytes
+    St4: 6,  # TODO: Really??
+    (Vzip, uaddlp, Vrev): 1,
+    VecToGprMov: 1,
+    (vadd, vsub): 1,
+    (vmov): 1,
+    ASimdCompare: 1,
+    Transpose: 1,
+    AESInstruction: 1,
+    AArch64NeonLogical: 1,
+    vext: 1,
+    (vmovi): 1,
+    (vxtn): 1,
+    VShiftImmediateBasic: 1,
+    VShiftRegBasic: 1,
+    (AArch64NeonShiftInsert, vsrshr): 1,
+    (Vmul, Vmla, Vqdmulh): 2,
+    vusra: 1,
+    vtbl: 1,
+    vtbl_2: 1,
+    (Vmull, Vmlal): 1,
+    (
+        AArch64BasicArithmetic,
+        AArch64ConditionalSelect,
+        AArch64ConditionalCompare,
+        AArch64Logical,
+        AArch64LogicalShifted,
+        AArch64Move,
+    ): 1,
+    AArch64Shift: 1,
+    AArch64ShiftedArithmetic: 1,
+    Tst: 1,
+    (
+        fmov_0,
+        fmov_0_force_output,
+        fmov_1,
+        fmov_1_force_output,
+    ): 1,
+    fmov_s_form: 1,  # from vec to gen reg
+    fmov_d_form: 1,  # from vec to gen reg (64-bit)
+    (AArch64HighMultiply): 4,
+    (AArch64Multiply): 3,
+    AArch64CRC32: 1,
+    (vdup, vdup_w): 1,
+    umull_wform: 1,
+    vuaddlv_sform: 1,  # 8B/8H
+    q_ldr1_stack: 1,
+    Q_Ld2_Lane_Post_Inc: 2,
+    q_ld2_lane_s: 2,
+    Ld4: 10,
+    Ld3: 4,
+    Ld2: 2,
+    q_ld1_2: 1,
+    St2: 2,
+    q_st1_4_with_postinc: 4,
+    mov_wtov_s: 1,
+    mov_vtov_d: 1,
+    lsr: 1,
+    movk_imm_lsl: 1,
+}
+
+default_latencies = {
+    # For OOO uArch we use relaxed latency modeling for load instructions
+    # since the uArch will heavily front-load them anyway
+    (Ldp_X, Ldp_W, Ldr_X, Ldr_D, Ldr_Q, Stp_Q, Ldp_Q): 4,
+    (Stp_X, Str_X, Str_Q): 2,
+    Stp_W: 1,
+    St3: 6,  # Multiple structures, Q form, storing bytes
+    St4: 4,
+    Ld4: 10,
+    Ld3: 8,
+    Ld2: 7,
+    q_ld1_2: 5,
+    (Vzip, Vrev, uaddlp): 2,
+    VecToGprMov: 2,
+    ASimdCompare: 2,
+    (vxtn): 2,
+    AArch64NeonCount: 2,
+    AESInstruction: 2,
+    AArch64NeonLogical: 2,
+    vext: 2,
+    Transpose: 2,
+    (vadd, vsub): 2,
+    (vmov): 2,  # ???
+    (vmovi): 2,
+    (Vmul, Vmla, Vqdmulh): 5,
+    vusra: 4,  # TODO: Add fwd path
+    (Vmull, Vmlal): 4,
+    VShiftImmediateBasic: 2,
+    VShiftRegBasic: 2,
+    AArch64NeonShiftInsert: 2,
+    (vsrshr): 4,
+    (
+        AArch64BasicArithmetic,
+        AArch64ConditionalSelect,
+        AArch64ConditionalCompare,
+        AArch64Logical,
+        AArch64LogicalShifted,
+        AArch64Move,
+    ): 1,
+    AArch64Shift: 1,
+    AArch64ShiftedArithmetic: 2,
+    Tst: 1,
+    (
+        fmov_0,
+        fmov_0_force_output,
+        fmov_1,
+        fmov_1_force_output,
+    ): 3,
+    fmov_s_form: 2,  # from vec to gen reg
+    fmov_d_form: 2,  # from vec to gen reg (64-bit)
+    AArch64HighMultiply: 5,
+    AArch64Multiply: 4,
+    AArch64CRC32: 2,
+    (vdup, vdup_w): 3,
+    umull_wform: 2,
+    vtbl: 2,
+    vtbl_2: 2,
+    vuaddlv_sform: 5,  # 8B/8H
+    q_ldr1_stack: 7,
+    Q_Ld2_Lane_Post_Inc: 7,
+    q_ld2_lane_s: 7,
+    q_st1_4_with_postinc: 5,
+    St2: 4,
+    mov_wtov_s: 5,
+    mov_vtov_d: 2,
+    lsr: 1,
+    movk_imm_lsl: 1,
+}
+
+
+def get_latency(src, out_idx, dst):
+    _ = out_idx  # out_idx unused
+
+    instclass_src = find_class(src)
+    instclass_dst = find_class(dst)
+
+    latency = lookup_multidict(default_latencies, src, instclass_src)
+
+    # Fast mul->mla forwarding
+    if (
+        instclass_src in [vmul, vmul_lane]
+        and instclass_dst in [vmla, vmla_lane, vmls, vmls_lane]
+        and src.args_out[0] == dst.args_in_out[0]
+    ):
+        return 2
+    # Fast mla->mla forwarding
+    if (
+        instclass_src in [vmla, vmla_lane, vmls, vmls_lane]
+        and instclass_dst in [vmla, vmla_lane, vmls, vmls_lane]
+        and src.args_in_out[0] == dst.args_in_out[0]
+    ):
+        return 2
+    # Pi 5 Cortex-A76 r4p1 measurements give a 3-cycle signed
+    # SMULL->SMLAL dependency when the SMULL destination is the SMLAL
+    # accumulator. Both .4h->.4s and .2s->.2d forms were measured.
+    if (
+        instclass_src in [vsmull, vsmull2, vsmull_lane, vsmull2_lane]
+        and instclass_dst in [vsmlal, vsmlal2, vsmlal_lane, vsmlal2_lane]
+        and src.args_out[0] == dst.args_in_out[0]
+    ):
+        return 3
+    # Retain the related N1 approximation for unmeasured unsigned forms.
+    if (
+        instclass_src in all_subclass_leaves(Vmull)
+        and instclass_dst in all_subclass_leaves(Vmlal)
+        and src.args_out[0] == dst.args_in_out[0]
+    ):
+        return 1
+    # Fast mlal->mlal forwarding
+    if (
+        instclass_src in all_subclass_leaves(Vmlal)
+        and instclass_dst in all_subclass_leaves(Vmlal)
+        and src.args_in_out[0] == dst.args_in_out[0]
+    ):
+        return 1
+    # Fast CRC32 chain forwarding (SWOG, section 3.21 CRC note 1)
+    if (
+        instclass_src in all_subclass_leaves(AArch64CRC32)
+        and instclass_dst in all_subclass_leaves(AArch64CRC32)
+        and src.args_out[0] == dst.args_in[0]
+    ):
+        return 1
+
+    return latency
+
+
+def get_units(src):
+    instclass_src = find_class(src)
+    units = lookup_multidict(execution_units, src, instclass_src)
+    if isinstance(units, list):
+        return units
+    return [units]
+
+
+def get_inverse_throughput(src):
+    instclass_src = find_class(src)
+    return lookup_multidict(inverse_throughput, src, instclass_src)

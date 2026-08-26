@@ -13,3 +13,5 @@ The following microarchitectures have experimental support:
 * Cortex-M85 (Armv8.1-M+Helium)
 * Cortex-A55 (AArch64): Largely complete and accurate
 * Cortex-A72 (AArch64)
+* Cortex-A76 (AArch64): Experimental; signed SMULL/SMLAL timing validated on
+  Raspberry Pi 5 Cortex-A76 r4p1

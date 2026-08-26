@@ -37,6 +37,8 @@
 # ################################################################################# #
 
 from enum import Enum
+from sympy import simplify
+
 from slothy.helper import lookup_multidict
 from slothy.targets.arm_v81m.arch_v81m import (
     find_class,
@@ -44,6 +46,7 @@ from slothy.targets.arm_v81m.arch_v81m import (
     ldr,
     ldr_with_writeback,
     ldr_with_post,
+    str_reg,
     mov_imm,
     mvn_imm,
     mov,
@@ -56,6 +59,13 @@ from slothy.targets.arm_v81m.arch_v81m import (
     orr_shifted,
     eor,
     eor_shifted,
+    bic,
+    bic_shifted,
+    ror,
+    ror_imm,
+    ror_short,
+    cmp_reg,
+    cmp_imm,
     sub,
     pkhbt_shifted,
     add_imm,
@@ -72,6 +82,7 @@ from slothy.targets.arm_v81m.arch_v81m import (
     vshllb,
     vshllt,
     vsli,
+    vsri,
     vmovlb,
     vmovlt,
     vrev16,
@@ -81,6 +92,7 @@ from slothy.targets.arm_v81m.arch_v81m import (
     vmov_imm,
     vmov_vector,
     vmov_double_v2r,
+    vmov_double_r2v,
     vadd_sv,
     vadd_vv,
     vsub,
@@ -222,10 +234,65 @@ def add_further_constraints(slothy):
     _add_st_ld_hazard(slothy)
 
 
+def _get_inst(inst):
+    return getattr(inst, "inst", inst)
+
+
+def _is_same_base_scalar_str_ldr(inst_a, inst_b):
+    return isinstance(_get_inst(inst_a), str_reg) and isinstance(_get_inst(inst_b), ldr)
+
+
+def _try_evaluate_immediate(expr):
+    if expr is None:
+        return None
+    try:
+        return int(simplify(str(expr)))
+    except Exception:
+        return None
+
+
+def try_get_base_and_imm(inst):
+    inst = _get_inst(inst)
+    base = getattr(inst, "addr", None)
+    imm = _try_evaluate_immediate(getattr(inst, "pre_index", None))
+    if base is None or imm is None:
+        return None
+    return base, imm
+
+
+# Cortex-M55 TRM 101051, "TCM interfaces", documents DTCM as four 32-bit
+# interfaces selected by address bits [3:2]: D0TCM, D1TCM, D2TCM, D3TCM. The
+# Cortex-M55 SWOG 102692, "Memory access instructions", uses the same bits to
+# define TCM bank conflicts for MVE memory accesses. This helper models that
+# documented DTCM bank selection.
+def m55_dtcm_bank(imm):
+    return (imm >> 2) & 0x3
+
+
+def is_same_bank_scalar_store_load_hazard(inst_a, inst_b):
+    # Conservative scalar scheduling approximation. The TRM documents DTCM
+    # buffered writes and same-address read hazards, and the SWOG documents
+    # same-bank TCM conflicts for MVE memory accesses.
+    # We therefore avoid nearby scalar STR -> LDR pairs to the same DTCM bank.
+    # This same-bank scalar rule is a model heuristic, not a direct SWOG latency
+    # table entry.
+    if not _is_same_base_scalar_str_ldr(inst_a, inst_b):
+        return False
+
+    a = try_get_base_and_imm(inst_a)
+    b = try_get_base_and_imm(inst_b)
+    if a is None or b is None:
+        return False
+
+    base_a, imm_a = a
+    base_b, imm_b = b
+    return base_a == base_b and m55_dtcm_bank(imm_a) == m55_dtcm_bank(imm_b)
+
+
 # ===============================================================#
 #                   CONSTRAINT (Performance)                     #
 # ----------------------------------------------------------------#
-# Prevent ST-LD hazards by forbidding VSTR; XXX; VLDR            #
+# Prevent ST-LD hazards by forbidding store; XXX; load           #
 # This is a strict overapproximation of the hazard: there are    #
 # cases where the above pattern does not stall, depending on     #
 # the addresses being loaded/stored from/to                      #
@@ -235,6 +302,11 @@ def _add_st_ld_hazard(slothy):
         return
 
     def is_st_ld_pair(instA, instB):
+        # Scalar STR/LDR are physical memory accesses even when the base is
+        # sp/r13. st_ld_hazard_ignore_stack intentionally only suppresses
+        # virtual save/restore stack instructions identified by is_stack_*().
+        if is_same_bank_scalar_store_load_hazard(instA, instB):
+            return True
         if not instA.inst.is_vector_store() or not instB.inst.is_load():
             return False
         if slothy.config.constraints.st_ld_hazard_ignore_scattergather and (
@@ -320,6 +392,13 @@ execution_units = {
     orr_shifted: ExecutionUnit.SCALAR,
     eor: ExecutionUnit.SCALAR,
     eor_shifted: ExecutionUnit.SCALAR,
+    bic: ExecutionUnit.SCALAR,
+    bic_shifted: ExecutionUnit.SCALAR,
+    ror: ExecutionUnit.SCALAR,
+    ror_imm: ExecutionUnit.SCALAR,
+    ror_short: ExecutionUnit.SCALAR,
+    cmp_reg: ExecutionUnit.SCALAR,
+    cmp_imm: ExecutionUnit.SCALAR,
     sub: ExecutionUnit.SCALAR,
     pkhbt_shifted: ExecutionUnit.SCALAR,
     add_imm: ExecutionUnit.SCALAR,
@@ -343,6 +422,7 @@ execution_units = {
     vshllb: ExecutionUnit.VEC_INT,
     vshllt: ExecutionUnit.VEC_INT,
     vsli: ExecutionUnit.VEC_INT,
+    vsri: ExecutionUnit.VEC_INT,
     vmovlb: ExecutionUnit.VEC_INT,
     vmovlt: ExecutionUnit.VEC_INT,
     vrev16: ExecutionUnit.VEC_INT,
@@ -352,6 +432,7 @@ execution_units = {
     vmov_imm: [ExecutionUnit.VEC_INT, ExecutionUnit.VEC_MUL],
     vmov_vector: [ExecutionUnit.VEC_INT, ExecutionUnit.VEC_MUL],
     vmov_double_v2r: [ExecutionUnit.VEC_INT, ExecutionUnit.VEC_MUL],
+    vmov_double_r2v: [ExecutionUnit.VEC_INT, ExecutionUnit.VEC_MUL],
     vadd_sv: ExecutionUnit.VEC_INT,
     vadd_vv: ExecutionUnit.VEC_INT,
     vsub: ExecutionUnit.VEC_INT,
@@ -396,6 +477,7 @@ execution_units = {
     strd: ExecutionUnit.STORE,
     strd_with_writeback: ExecutionUnit.STORE,
     strd_with_post: ExecutionUnit.STORE,
+    str_reg: ExecutionUnit.STORE,
     restored: ExecutionUnit.STACK,
     restore: ExecutionUnit.STACK,
     saved: ExecutionUnit.STACK,
@@ -477,6 +559,13 @@ inverse_throughput = {
         orr_shifted,
         eor,
         eor_shifted,
+        bic,
+        bic_shifted,
+        ror,
+        ror_imm,
+        ror_short,
+        cmp_reg,
+        cmp_imm,
         sub,
         pkhbt_shifted,
         add_imm,
@@ -484,6 +573,7 @@ inverse_throughput = {
         sub_imm,
         vmov_imm,
         vmov_double_v2r,
+        vmov_double_r2v,
         ldr,
         ldr_with_writeback,
         ldr_with_post,
@@ -499,6 +589,7 @@ inverse_throughput = {
         strd,
         strd_with_writeback,
         strd_with_post,
+        str_reg,
         restored,
         restore,
         saved,
@@ -525,6 +616,7 @@ inverse_throughput = {
         vshllb,
         vshllt,
         vsli,
+        vsri,
         vmovlb,
         vmovlt,
         vrev16,
@@ -628,12 +720,23 @@ inverse_throughput = {
 }
 
 default_latencies = {
+    # Arm Cortex-M55 Software Optimization Guide: the instruction timing table
+    # lists scalar load results, including LDRD, with a 2-cycle result latency.
     (
         ldrd,
         ldrd_no_imm,
         ldrd_with_writeback,
         ldrd_with_post,
     ): 2,
+    # Arm Cortex-M55 Software Optimization Guide: STR/STRD are single-issue
+    # store-pipe instructions. Stores have no GPR result; use a 1-cycle model
+    # latency if SLOTHY needs to query a store as a producer.
+    (
+        str_reg,
+        strd,
+        strd_with_writeback,
+        strd_with_post,
+    ): 1,
     (
         ldrb,
         ldrb_no_imm,
@@ -653,6 +756,12 @@ default_latencies = {
         log_and,
         orr,
         eor,
+        bic,
+        ror,
+        ror_imm,
+        ror_short,
+        cmp_reg,
+        cmp_imm,
         sub,
         pkhbt_shifted,
         add_imm,
@@ -669,6 +778,7 @@ default_latencies = {
         vmov_imm,
         vmov_vector,
         vmov_double_v2r,
+        vmov_double_r2v,
         vadd_vv,
         vadd_sv,
         vsub,
@@ -740,6 +850,7 @@ default_latencies = {
         eor_shifted,
         orr_shifted,
         log_and_shifted,
+        bic_shifted,
     ): 2,  # NOTE: latency would be 1 if shift amount is 0 in m55
     (vld20, vld21): 2,
     (vld20_with_writeback, vld21_with_writeback): 2,
@@ -758,6 +869,7 @@ default_latencies = {
         vshllb,
         vshllt,
         vsli,
+        vsri,
         vmovlb,
         vmovlt,
         vmulh,
@@ -881,6 +993,7 @@ def get_latency(src, out_idx, dst):
         vshllb,
         vshllt,
         vsli,
+        vsri,
         vmovlb,
         vmovlt,
         vmulh,

@@ -62,6 +62,7 @@ class RegisterType(Enum):
     StackMVE = (3,)
     StackGPR = (4,)
     HINT = (5,)
+    FLAGS = (6,)
 
     def __str__(self):
         return self.name
@@ -73,6 +74,8 @@ class RegisterType(Enum):
     def is_renamed(ty):
         """Indicate if register type should be subject to renaming"""
         if ty == RegisterType.HINT:
+            return False
+        if ty == RegisterType.FLAGS:
             return False
         return True
 
@@ -111,6 +114,7 @@ class RegisterType(Enum):
             RegisterType.StackMVE: qstack_locations,
             RegisterType.MVE: vregs,
             RegisterType.HINT: [],
+            RegisterType.FLAGS: ["flags"],
         }[reg_type]
 
     @staticmethod
@@ -133,6 +137,7 @@ class RegisterType(Enum):
             "mve": RegisterType.MVE,
             "gpr": RegisterType.GPR,
             "hint": RegisterType.HINT,
+            "flags": RegisterType.FLAGS,
         }.get(string, None)
 
     def default_aliases():
@@ -140,7 +145,9 @@ class RegisterType(Enum):
 
     def default_reserved():
         """Return the list of registers that should be reserved by default"""
-        return set(["r13", "r14"] + RegisterType.list_registers(RegisterType.HINT))
+        return set(
+            ["flags", "r13", "r14"] + RegisterType.list_registers(RegisterType.HINT)
+        )
 
 
 class LeLoop(Loop):
@@ -239,6 +246,7 @@ class Instruction:
         self.immediate = None
         self.datatype = None
         self.index = None
+        self.width = None
         self.flag = None
         self.barrel = None
 
@@ -375,6 +383,7 @@ class Instruction:
                 strd,
                 strd_with_writeback,
                 strd_with_post,
+                str_reg,
                 qsave,
                 qrestore,
                 save,
@@ -638,12 +647,14 @@ class MVEInstruction(Instruction):
             "(((0[xb])?[0-9a-fA-F]+|/| |-|\\*|\\+|\\(|\\)|=|<<|>>)+)"
         )
         index_pattern = "[0-9]+"
+        width_pattern = r"(?:\.w|\.n|)"
         barrel_pattern = "(?:lsl|ror|lsr|asr)\\\\s*"
 
         src = replace_placeholders(src, "imm", imm_pattern, "imm")
         src = replace_placeholders(src, "dt", dt_pattern, "datatype")
         src = replace_placeholders(src, "fdt", fdt_pattern, "datatype")
         src = replace_placeholders(src, "index", index_pattern, "index")
+        src = replace_placeholders(src, "width", width_pattern, "width")
         src = replace_placeholders(src, "barrel", barrel_pattern, "barrel")
 
         src = r"\s*" + src + r"\s*(//.*)?\Z"
@@ -715,14 +726,13 @@ class MVEInstruction(Instruction):
         arg_types_out = [MVEInstruction._infer_register_type(r) for r in outputs]
         arg_types_in_out = [MVEInstruction._infer_register_type(r) for r in in_outs]
 
-        # TODO: add flags
-        # if modifiesFlags:
-        #     arg_types_out += [RegisterType.FLAGS]
-        #     outputs += ["flags"]
+        if modifiesFlags:
+            arg_types_out += [RegisterType.FLAGS]
+            outputs += ["flags"]
 
-        # if dependsOnFlags:
-        #     arg_types_in += [RegisterType.FLAGS]
-        #     inputs += ["flags"]
+        if dependsOnFlags:
+            arg_types_in += [RegisterType.FLAGS]
+            inputs += ["flags"]
 
         super().__init__(
             mnemonic=pattern,
@@ -745,6 +755,8 @@ class MVEInstruction(Instruction):
 
     @staticmethod
     def _to_reg(ty, s):
+        if ty == RegisterType.FLAGS:
+            return "flags"
         if ty == RegisterType.GPR:
             c = "r"
         elif ty == RegisterType.MVE:
@@ -769,8 +781,8 @@ class MVEInstruction(Instruction):
 
     @staticmethod
     def _instantiate_pattern(s, ty, arg, out):
-        # if ty == RegisterType.FLAGS:
-        #   return out
+        if ty == RegisterType.FLAGS:
+            return out
         rep = MVEInstruction._build_pattern_replacement(s, ty, arg)
         res = out.replace(f"<{s}>", rep)
         if res == out:
@@ -805,18 +817,19 @@ class MVEInstruction(Instruction):
             "imm", "immediate", lambda x: x.replace("#", "")
         )  # Strip '#'
         group_to_attribute("index", "index", int)
+        group_to_attribute("width", "width")
         group_to_attribute("barrel", "barrel")
 
         for s, ty in obj.pattern_inputs:
-            # if ty == RegisterType.FLAGS:
-            #     obj.args_in.append("flags")
-            # else:
-            obj.args_in.append(MVEInstruction._to_reg(ty, res[s]))
+            if ty == RegisterType.FLAGS:
+                obj.args_in.append("flags")
+            else:
+                obj.args_in.append(MVEInstruction._to_reg(ty, res[s]))
         for s, ty in obj.pattern_outputs:
-            # if ty == RegisterType.FLAGS:
-            #     obj.args_out.append("flags")
-            # else:
-            obj.args_out.append(MVEInstruction._to_reg(ty, res[s]))
+            if ty == RegisterType.FLAGS:
+                obj.args_out.append("flags")
+            else:
+                obj.args_out.append(MVEInstruction._to_reg(ty, res[s]))
 
         for s, ty in obj.pattern_in_outs:
             obj.args_in_out.append(MVEInstruction._to_reg(ty, res[s]))
@@ -830,11 +843,9 @@ class MVEInstruction(Instruction):
         modifies_flags = getattr(c, "modifiesFlags", False)
         depends_on_flags = getattr(c, "dependsOnFlags", False)
         if isinstance(src, str):
-            if (
-                src.split(".")[0] != pattern.split(".")[0]
-                and src.split(" ")[0] != pattern.split(" ")[0]
-            ):
-                raise ParsingException("Mnemonic does not match")
+            # Leave checking the mnemonic to the generated parser. Apart from
+            # being redundant, a textual pre-check rejects patterns containing
+            # optional mnemonic suffixes such as <width>.
             res = MVEInstruction.get_parser(pattern)(src)
         else:
             assert isinstance(src, dict)
@@ -887,6 +898,7 @@ class MVEInstruction(Instruction):
         out = replace_pattern(out, "datatype", "dt", lambda x: x.upper())
         out = replace_pattern(out, "datatype", "fdt", lambda x: x.upper())
         out = replace_pattern(out, "index", "index", str)
+        out = replace_pattern(out, "width", "width", lambda x: x.lower())
         out = replace_pattern(out, "barrel", "barrel", lambda x: x.lower())
 
         out = out.replace("\\[", "[")
@@ -1031,15 +1043,56 @@ class orr_shifted(MVEInstruction):
 
 
 class eor(MVEInstruction):
-    pattern = "eor <Rd>, <Rn>, <Rm>"
+    pattern = "eor<width> <Rd>, <Rn>, <Rm>"
     inputs = ["Rn", "Rm"]
     outputs = ["Rd"]
 
 
 class eor_shifted(MVEInstruction):
-    pattern = "eor <Rd>, <Rn>, <Rm>, <barrel> <imm>"
+    pattern = "eor<width> <Rd>, <Rn>, <Rm>, <barrel> <imm>"
     inputs = ["Rn", "Rm"]
     outputs = ["Rd"]
+
+
+class bic(MVEInstruction):
+    pattern = "bic <Rd>, <Rn>, <Rm>"
+    inputs = ["Rn", "Rm"]
+    outputs = ["Rd"]
+
+
+class bic_shifted(MVEInstruction):
+    pattern = "bic <Rd>, <Rn>, <Rm>, <barrel> <imm>"
+    inputs = ["Rn", "Rm"]
+    outputs = ["Rd"]
+
+
+class ror(MVEInstruction):
+    pattern = "ror <Rd>, <Rn>, <Rm>"
+    inputs = ["Rn", "Rm"]
+    outputs = ["Rd"]
+
+
+class ror_imm(MVEInstruction):
+    pattern = "ror <Rd>, <Rn>, <imm>"
+    inputs = ["Rn"]
+    outputs = ["Rd"]
+
+
+class ror_short(MVEInstruction):
+    pattern = "ror <Rd>, <imm>"
+    in_outs = ["Rd"]
+
+
+class cmp_reg(MVEInstruction):
+    pattern = "cmp <Rn>, <Rm>"
+    inputs = ["Rn", "Rm"]
+    modifiesFlags = True
+
+
+class cmp_imm(MVEInstruction):
+    pattern = "cmp <Rn>, <imm>"
+    inputs = ["Rn"]
+    modifiesFlags = True
 
 
 class sub(MVEInstruction):
@@ -1206,7 +1259,7 @@ class ldrd_with_post(MVEInstruction):
 
 
 class ldr(MVEInstruction):
-    pattern = "ldr <Rt>, [<Rn>, <imm>]"
+    pattern = "ldr<width> <Rt>, [<Rn>, <imm>]"
     inputs = ["Rn"]
     outputs = ["Rt"]
 
@@ -1296,6 +1349,19 @@ class strd_with_post(MVEInstruction):
         return obj
 
 
+class str_reg(MVEInstruction):
+    pattern = "str<width> <Rt>, [<Rn>, <imm>]"
+    inputs = ["Rn", "Rt"]
+
+    @classmethod
+    def make(cls, src):
+        obj = MVEInstruction.build(cls, src)
+        obj.increment = None
+        obj.pre_index = obj.immediate
+        obj.addr = obj.args_in[0]
+        return obj
+
+
 class vrshr(MVEInstruction):
     pattern = "vrshr.<dt> <Qd>, <Qm>, <imm>"
     inputs = ["Qm"]
@@ -1346,6 +1412,26 @@ class vmov_double_v2r(MVEInstruction):
     pattern = "vmov <Rt0>, <Rt1>, <Qd>[<index0>], <Qa>[<index1>]"
     inputs = ["Qd", "Qa"]
     outputs = ["Rt0", "Rt1"]
+
+
+class vmov_double_r2v(MVEInstruction):
+    pattern = "vmov <Qd>[<index0>], <Qa>[<index1>], <Rt0>, <Rt1>"
+    inputs = ["Rt0", "Rt1"]
+    in_outs = ["Qd", "Qa"]
+
+    @classmethod
+    def make(cls, src):
+        obj = MVEInstruction.build(cls, src)
+        if len(obj.args_in_out) == 2 and obj.args_in_out[0] == obj.args_in_out[1]:
+            obj.pattern = "vmov <Qd>[<index0>], <Qd>[<index1>], <Rt0>, <Rt1>"
+            obj.args_in_out = [obj.args_in_out[0]]
+            obj.arg_types_in_out = [obj.arg_types_in_out[0]]
+            obj.args_in_out_restrictions = [obj.args_in_out_restrictions[0]]
+            obj.in_outs = [obj.in_outs[0]]
+            obj.pattern_in_outs = [obj.pattern_in_outs[0]]
+            obj.num_in_out = 1
+        obj.detected_vmov_double_r2v_pair = False
+        return obj
 
 
 class mov(MVEInstruction):
@@ -1444,6 +1530,12 @@ class vshllt(MVEInstruction):
 
 class vsli(MVEInstruction):
     pattern = "vsli.<dt> <Qd>, <Qm>, <imm>"
+    inputs = ["Qm"]
+    in_outs = ["Qd"]
+
+
+class vsri(MVEInstruction):
+    pattern = "vsri.<dt> <Qd>, <Qm>, <imm>"
     inputs = ["Qm"]
     in_outs = ["Qd"]
 
@@ -2659,6 +2751,79 @@ def vqdmlsdh_vqdmladhx_parsing_cb(this_class, other_class):
 
 vqdmlsdh.global_parsing_cb = vqdmlsdh_vqdmladhx_parsing_cb(vqdmlsdh, vqdmladhx)
 vqdmladhx.global_parsing_cb = vqdmlsdh_vqdmladhx_parsing_cb(vqdmladhx, vqdmlsdh)
+
+
+def vmov_double_r2v_parsing_cb(this_class):
+    def mark_outputs_only(inst):
+        inst.num_out = len(inst.args_in_out)
+        inst.args_out = list(inst.args_in_out)
+        inst.arg_types_out = [RegisterType.MVE for _ in inst.args_in_out]
+        inst.args_out_restrictions = list(inst.args_in_out_restrictions)
+        inst.outputs = list(inst.in_outs)
+        inst.pattern_outputs = list(inst.pattern_in_outs)
+
+        inst.num_in_out = 0
+        inst.args_in_out = []
+        inst.in_outs = []
+        inst.pattern_in_outs = []
+        inst.arg_types_in_out = []
+        inst.args_in_out_restrictions = []
+
+        inst.detected_vmov_double_r2v_pair = True
+
+    def core(inst, t, log=None):
+        # Special-case two vmov r2v that jointly overwrite q*.
+        # Conditions:
+        #  - Both vmovs target the same vector register
+        #       (Qd==Qa, and equal across the pair)
+        #  - The two vmovs jointly cover all lanes {0,1,2,3}
+        #  - The first vmov has exactly one in/out data-flow successor, which
+        #    is the second vmov. Unrelated intervening instructions are allowed;
+        #    intervening q-register consumers are not.
+
+        assert isinstance(inst, this_class)
+        if getattr(inst, "detected_vmov_double_r2v_pair", False):
+            return False
+        if getattr(inst, "detected_vmov_double_r2v_pair_successor", False):
+            return False
+
+        if len(t.dst_in_out) != 1 or len(t.dst_in_out[0]) != 1:
+            return False
+        succ = t.dst_in_out[0][0]
+        if not isinstance(succ.inst, this_class):
+            return False
+
+        same_q_this = hasattr(inst, "args_in_out") and len(inst.args_in_out) == 1
+        same_q_next = (
+            hasattr(succ.inst, "args_in_out") and len(succ.inst.args_in_out) == 1
+        )
+        same_q_across = (
+            same_q_this
+            and same_q_next
+            and (inst.args_in_out[0] == succ.inst.args_in_out[0])
+        )
+
+        idx_this = getattr(inst, "index", None)
+        idx_next = getattr(succ.inst, "index", None)
+        full_cover = (
+            isinstance(idx_this, list)
+            and isinstance(idx_next, list)
+            and len(idx_this) == 2
+            and len(idx_next) == 2
+            and set(idx_this + idx_next) == {0, 1, 2, 3}
+        )
+
+        if not (same_q_across and full_cover):
+            return False
+
+        mark_outputs_only(inst)
+        succ.inst.detected_vmov_double_r2v_pair_successor = True
+        return True
+
+    return core
+
+
+vmov_double_r2v.global_parsing_cb = vmov_double_r2v_parsing_cb(vmov_double_r2v)
 
 
 # Returns the list of all subclasses of a class which don't have
